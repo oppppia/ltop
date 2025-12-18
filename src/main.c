@@ -2,6 +2,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <unistd.h>
 
 /* 
     /proc
@@ -67,9 +68,7 @@ void fill_process_stat(ProcessInfo* p) {
     FILE* file = fopen(path, "r");
     if (!file) {
         p->state = '?';
-        p->utime = 0;
-        p->stime = 0;
-        p->rss   = 0;
+        p->utime = p->stime = p->rss = 0;
         return;
     }
 
@@ -91,9 +90,7 @@ void fill_process_stat(ProcessInfo* p) {
         p->rss   = rss;
     } else {
         p->state = '?';
-        p->utime = 0;
-        p->stime = 0;
-        p->rss   = 0;
+        p->utime = p->stime = p->rss = 0;
     }
 
     fclose(file);
