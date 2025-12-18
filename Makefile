@@ -1,4 +1,6 @@
 all:
-	gcc src/main.c -o main
+	gcc src/main.c -o ltop
 clean:
-	rm -f main
+	rm -f ltop
+start:
+	./ltop
