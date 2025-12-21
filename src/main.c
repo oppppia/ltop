@@ -353,7 +353,7 @@ static void render_ui(const AppState* state, const ProcessInfo* processes,
     mvprintw(max_y - 2, 0, "Processes: %zu | Selected %d", count,
              state->selected_index + 1);
 
-    mvprintw(max_y - 1, 0, "Q:Quit  ↑↓:Navigate  K:Kill");
+    mvprintw(max_y - 1, 0, "Q:Quit  ↑↓:Navigate  K:Kill  R:Refresh");
 
     refresh();
 }
