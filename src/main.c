@@ -27,8 +27,10 @@ typedef struct {
     long mem_total_kb;
     long mem_free_kb;
     long mem_available_kb;
+    long mem_cached_kb;
     long swap_total_kb;
     long swap_free_kb;
+    long buffers_kb;
 } SystemMemoryInfo;
 
 typedef struct {
@@ -148,10 +150,14 @@ static bool read_system_memory_info(SystemMemoryInfo* mem_info) {
             sscanf(line, "MemFree: %ld", &mem_info->mem_free_kb);
         } else if (strncmp(line, "MemAvailable:", 13) == 0) {
             sscanf(line, "MemAvailable: %ld", &mem_info->mem_available_kb);
+        } else if (strncmp(line, "Cached:", 7) == 0) {
+            sscanf(line, "Cached: %ld", &mem_info->mem_cached_kb);
         } else if (strncmp(line, "SwapTotal:", 10) == 0) {
             sscanf(line, "SwapTotal: %ld", &mem_info->swap_total_kb);
         } else if (strncmp(line, "SwapFree:", 9) == 0) {
             sscanf(line, "SwapFree: %ld", &mem_info->swap_free_kb);
+        } else if (strncmp(line, "Buffers:", 8) == 0) {
+            sscanf(line, "Buffers: %ld", &mem_info->buffers_kb);
         }
     }
 
@@ -311,18 +317,45 @@ static void render_ui(const AppState* state, const ProcessInfo* processes,
 
     clear();
 
-    int max_x = getmaxx(stdscr);
+    int    max_x = getmaxx(stdscr);
 
-    mvprintw(4, 0, "%-8s %-22s %-6s %-12s", "PID", "NAME", "STATE", "MEM (KB)");
+    double mem_total_mb     = (double)mem_info->mem_total_kb / KB_TO_MB;
+    double mem_free_mb      = (double)mem_info->mem_free_kb / KB_TO_MB;
+    double mem_available_mb = (double)mem_info->mem_available_kb / KB_TO_MB;
+    double mem_cached_mb    = (double)mem_info->mem_cached_kb / KB_TO_MB;
+    double swap_total_mb    = (double)mem_info->swap_total_kb / KB_TO_MB;
+    double swap_free_mb     = (double)mem_info->swap_free_kb / KB_TO_MB;
+
+    double mem_used_mb = mem_total_mb - mem_free_mb - mem_cached_mb;
+    if (mem_used_mb < 0)
+        mem_used_mb = 0;
+
+    double swap_used_mb = swap_total_mb - swap_free_mb;
+    if (swap_used_mb < 0)
+        swap_used_mb = 0;
+
+    mvprintw(1, 0,
+             "MiB Mem : %8.1f total, %8.1f free, %8.1f used, %8.1f buff/cache",
+             mem_total_mb, mem_free_mb, mem_used_mb, mem_cached_mb);
+
+    mvprintw(2, 0,
+             "MiB Swap: %8.1f total, %8.1f free, %8.1f used. %8.1f avail Mem",
+             swap_total_mb, swap_free_mb, swap_used_mb, mem_available_mb);
 
     for (int i = 0; i < max_x; i++) {
-        mvaddch(5, i, '-');
+        mvaddch(4, i, '-');
+    }
+
+    mvprintw(3, 0, "%-8s %-22s %-6s %-12s", "PID", "NAME", "STATE", "MEM (KB)");
+
+    for (int i = 0; i < max_x; i++) {
+        mvaddch(4, i, '-');
     }
 
     int max_y, max_x_full;
     getmaxyx(stdscr, max_y, max_x_full);
 
-    int visible_rows = max_y - 8;
+    int visible_rows = max_y - 7;
 
     if (visible_rows < 0) {
         visible_rows = 0;
@@ -342,7 +375,7 @@ static void render_ui(const AppState* state, const ProcessInfo* processes,
             attron(A_REVERSE);
         }
 
-        mvprintw(i + 6, 0, "%-8d %-22.22s %-6c %-12lu", proc->pid, proc->name,
+        mvprintw(i + 5, 0, "%-8d %-22.22s %-6c %-12lu", proc->pid, proc->name,
                  proc->state, proc->vm_rss_kb);
 
         if (process_idx == state->selected_index) {
