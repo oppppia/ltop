@@ -45,7 +45,7 @@ static bool         read_system_memory_info(SystemMemoryInfo* mem_info);
 static ProcessInfo* collect_processes(size_t* count);
 static void handle_user_input(AppState* state, const ProcessInfo* processes,
                               size_t count);
-static void terminate_process_with_dialog(int pid);
+static void terminate_process_with_dialog(const ProcessInfo* proc);
 static void render_ui(const AppState* state, const ProcessInfo* processes,
                       size_t count, const SystemMemoryInfo* mem_info);
 static void init_ncurses(void);
@@ -253,7 +253,7 @@ static void handle_user_input(AppState* state, const ProcessInfo* processes,
         case 'k':
             if (count > 0 && state->selected_index < (int)count) {
                 terminate_process_with_dialog(
-                    processes[state->selected_index].pid);
+                    &processes[state->selected_index]);
                 state->needs_refresh = true;
             }
             break;
@@ -267,8 +267,8 @@ static void handle_user_input(AppState* state, const ProcessInfo* processes,
     }
 }
 
-static void terminate_process_with_dialog(int pid) {
-    if (pid <= 0)
+static void terminate_process_with_dialog(const ProcessInfo* proc) {
+    if (proc == NULL)
         return;
 
     int max_y, max_x;
@@ -282,7 +282,8 @@ static void terminate_process_with_dialog(int pid) {
     box(terminate_dialog, 0, 0);
     keypad(terminate_dialog, TRUE);
 
-    mvwprintw(terminate_dialog, 1, 2, "Terminate process: PID %d", pid);
+    mvwprintw(terminate_dialog, 1, 2, "Terminate process: %s PID %d",
+              proc->name, proc->pid);
     mvwprintw(terminate_dialog, 2, 2, "------------------------------");
     mvwprintw(terminate_dialog, 3, 4, "1. SIGTERM");
     mvwprintw(terminate_dialog, 4, 4, "2. Cancel");
@@ -293,12 +294,14 @@ static void terminate_process_with_dialog(int pid) {
     int choice = wgetch(terminate_dialog);
 
     if (choice == '1') {
-        if (kill(pid, SIGTERM) == 0) {
+        if (kill(proc->pid, SIGTERM) == 0) {
             mvwprintw(terminate_dialog, 1, 2,
-                      "Successfully sent SIGTERM to PID %d", pid);
+                      "Successfully sent SIGTERM to %s PID %d", proc->name,
+                      proc->pid);
         } else {
             mvwprintw(terminate_dialog, 1, 2,
-                      "Failed to send SIGTERM to PID %d", pid);
+                      "Failed to send SIGTERM to %s PID %d", proc->name,
+                      proc->pid);
             mvwprintw(terminate_dialog, 2, 4, "Error: %s", strerror(errno));
         }
         mvwprintw(terminate_dialog, 4, 4, "Press any key to continue...");
