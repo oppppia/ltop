@@ -8,6 +8,7 @@
 #include <unistd.h>
 #include <ncurses.h>
 #include <signal.h>
+#include <time.h>
 
 #define PROC_PATH_MAX         64
 #define PROC_NAME_MAX         128
@@ -34,9 +35,10 @@ typedef struct {
 } SystemMemoryInfo;
 
 typedef struct {
-    int  selected_index;
-    bool should_quit;
-    bool needs_refresh;
+    int             selected_index;
+    bool            should_quit;
+    bool            needs_refresh;
+    struct timespec last_update;
 } AppState;
 
 static bool         is_numeric_string(const char* str);
@@ -46,10 +48,12 @@ static ProcessInfo* collect_processes(size_t* count);
 static void handle_user_input(AppState* state, const ProcessInfo* processes,
                               size_t count);
 static void terminate_process_with_dialog(const ProcessInfo* proc);
-static void render_ui(const AppState* state, const ProcessInfo* processes,
-                      size_t count, const SystemMemoryInfo* mem_info);
+static void render_memory_info(const SystemMemoryInfo* mem_info);
+static void render_process_list(const AppState*    state,
+                                const ProcessInfo* processes, size_t count);
 static void init_ncurses(void);
 static void cleanup_ncurses(void);
+static bool should_refresh(AppState* state);
 
 static bool is_numeric_string(const char* str) {
     if (str == NULL || *str == '\0')
@@ -136,6 +140,9 @@ static bool read_system_memory_info(SystemMemoryInfo* mem_info) {
     if (mem_info == NULL)
         return false;
 
+    // Initialize with zeros
+    memset(mem_info, 0, sizeof(SystemMemoryInfo));
+
     char  line[LINE_BUFFER_SIZE];
 
     FILE* file = fopen("/proc/meminfo", "r");
@@ -212,10 +219,9 @@ static ProcessInfo* collect_processes(size_t* count) {
         }
 
         processes[size].pid = pid;
-        if (!read_process_info(&processes[size]))
-            continue;
-
-        size++;
+        if (read_process_info(&processes[size])) {
+            size++;
+        }
     }
 
     closedir(proc_dir);
@@ -233,6 +239,7 @@ static void handle_user_input(AppState* state, const ProcessInfo* processes,
 
     switch (ch) {
         case 'q':
+        case 'Q':
             state->should_quit = true;
             break;
 
@@ -251,7 +258,9 @@ static void handle_user_input(AppState* state, const ProcessInfo* processes,
             break;
 
         case 'k':
-            if (count > 0 && state->selected_index < (int)count) {
+        case 'K':
+            if (count > 0 && state->selected_index >= 0 &&
+                state->selected_index < (int)count) {
                 terminate_process_with_dialog(
                     &processes[state->selected_index]);
                 state->needs_refresh = true;
@@ -259,6 +268,7 @@ static void handle_user_input(AppState* state, const ProcessInfo* processes,
             break;
 
         case 'r':
+        case 'R':
             state->needs_refresh = true;
             break;
 
@@ -274,7 +284,7 @@ static void terminate_process_with_dialog(const ProcessInfo* proc) {
     int max_y, max_x;
     getmaxyx(stdscr, max_y, max_x);
 
-    WINDOW* terminate_dialog = newwin(8, 50, max_y / 2 - 4, max_x / 2 - 25);
+    WINDOW* terminate_dialog = newwin(8, 60, max_y / 2 - 4, max_x / 2 - 30);
 
     if (terminate_dialog == NULL)
         return;
@@ -284,8 +294,8 @@ static void terminate_process_with_dialog(const ProcessInfo* proc) {
 
     mvwprintw(terminate_dialog, 1, 2, "Terminate process: %s PID %d",
               proc->name, proc->pid);
-    mvwprintw(terminate_dialog, 2, 2, "------------------------------");
-    mvwprintw(terminate_dialog, 3, 4, "1. SIGTERM");
+    mvwprintw(terminate_dialog, 2, 2, "--------------------------------");
+    mvwprintw(terminate_dialog, 3, 4, "1. SIGTERM (graceful termination)");
     mvwprintw(terminate_dialog, 4, 4, "2. Cancel");
     mvwprintw(terminate_dialog, 5, 4, "Select option [1-2]: ");
 
@@ -310,17 +320,20 @@ static void terminate_process_with_dialog(const ProcessInfo* proc) {
     }
 
     delwin(terminate_dialog);
-    refresh();
+    touchwin(stdscr);
+    wrefresh(stdscr);
 }
 
-static void render_ui(const AppState* state, const ProcessInfo* processes,
-                      size_t count, const SystemMemoryInfo* mem_info) {
-    if (processes == NULL || mem_info == NULL)
+static void render_memory_info(const SystemMemoryInfo* mem_info) {
+    if (mem_info == NULL)
         return;
 
-    clear();
+    int max_x = getmaxx(stdscr);
 
-    int    max_x = getmaxx(stdscr);
+    for (int i = 0; i < 3; i++) {
+        move(i, 0);
+        clrtoeol();
+    }
 
     double mem_total_mb     = (double)mem_info->mem_total_kb / KB_TO_MB;
     double mem_free_mb      = (double)mem_info->mem_free_kb / KB_TO_MB;
@@ -337,26 +350,44 @@ static void render_ui(const AppState* state, const ProcessInfo* processes,
     if (swap_used_mb < 0)
         swap_used_mb = 0;
 
+    attron(A_BOLD);
+    mvprintw(0, 0, "System Memory Information (auto-refresh every 3s):");
+    attroff(A_BOLD);
+
     mvprintw(1, 0,
              "MiB Mem : %8.1f total, %8.1f free, %8.1f used, %8.1f buff/cache",
              mem_total_mb, mem_free_mb, mem_used_mb, mem_cached_mb);
 
     mvprintw(2, 0,
-             "MiB Swap: %8.1f total, %8.1f free, %8.1f used. %8.1f avail Mem",
+             "MiB Swap: %8.1f total, %8.1f free, %8.1f used, %8.1f avail Mem",
              swap_total_mb, swap_free_mb, swap_used_mb, mem_available_mb);
 
+    // Draw separator line
     for (int i = 0; i < max_x; i++) {
         mvaddch(4, i, '-');
     }
+}
 
+static void render_process_list(const AppState*    state,
+                                const ProcessInfo* processes, size_t count) {
+    if (processes == NULL || state == NULL)
+        return;
+
+    int max_y, max_x;
+    getmaxyx(stdscr, max_y, max_x);
+
+    for (int i = 5; i < max_y - 2; i++) {
+        move(i, 0);
+        clrtoeol();
+    }
+
+    attron(A_UNDERLINE);
     mvprintw(3, 0, "%-8s %-22s %-6s %-12s", "PID", "NAME", "STATE", "MEM (KB)");
+    attroff(A_UNDERLINE);
 
     for (int i = 0; i < max_x; i++) {
         mvaddch(4, i, '-');
     }
-
-    int max_y, max_x_full;
-    getmaxyx(stdscr, max_y, max_x_full);
 
     int visible_rows = max_y - 7;
 
@@ -366,7 +397,7 @@ static void render_ui(const AppState* state, const ProcessInfo* processes,
 
     int start_idx = 0;
 
-    if (state->selected_index >= visible_rows) {
+    if (count > 0 && state->selected_index >= visible_rows) {
         start_idx = state->selected_index - visible_rows + 1;
     }
 
@@ -386,12 +417,32 @@ static void render_ui(const AppState* state, const ProcessInfo* processes,
         }
     }
 
-    mvprintw(max_y - 2, 0, "Processes: %zu | Selected %d", count,
-             state->selected_index + 1);
+    mvprintw(max_y - 2, 0, "Processes: %zu | Selected %d of %zu", count,
+             state->selected_index + 1, count);
 
-    mvprintw(max_y - 1, 0, "Q:Quit  ↑↓:Navigate  K:Kill  R:Refresh");
+    int y, x;
+    getyx(stdscr, y, x);
+    mvaddch(y, x - 1, ' ');
 
-    refresh();
+    mvprintw(max_y - 1, 0, "Q:Quit  ↑↓:Navigate  K:Kill  R:Refresh Now");
+}
+
+static bool should_refresh(AppState* state) {
+    if (state == NULL)
+        return false;
+
+    struct timespec now;
+    clock_gettime(CLOCK_MONOTONIC, &now);
+
+    long elapsed_ms = (now.tv_sec - state->last_update.tv_sec) * 1000 +
+        (now.tv_nsec - state->last_update.tv_nsec) / 1000000;
+
+    if (elapsed_ms >= REFRESH_INTERVAL_MS || state->needs_refresh) {
+        state->last_update = now;
+        return true;
+    }
+
+    return false;
 }
 
 static void init_ncurses(void) {
@@ -400,8 +451,7 @@ static void init_ncurses(void) {
     cbreak();
     keypad(stdscr, TRUE);
     curs_set(0);
-
-    timeout(REFRESH_INTERVAL_MS);
+    timeout(100);
 }
 
 static void cleanup_ncurses(void) {
@@ -413,38 +463,52 @@ int main(void) {
 
     AppState app_state = {
         .selected_index = 0, .should_quit = false, .needs_refresh = true};
+    clock_gettime(CLOCK_MONOTONIC, &app_state.last_update);
+
+    SystemMemoryInfo last_mem_info      = {0};
+    ProcessInfo*     last_processes     = NULL;
+    size_t           last_process_count = 0;
 
     while (!app_state.should_quit) {
-        size_t       process_count = 0;
-        ProcessInfo* processes     = collect_processes(&process_count);
-
-        if (processes == NULL) {
-            refresh();
-            sleep(1);
-            continue;
-        }
-
-        SystemMemoryInfo mem_info;
-        if (!read_system_memory_info(&mem_info)) {
-            memset(&mem_info, 0, sizeof(mem_info));
-        }
-
-        if (process_count > 0) {
-            if (app_state.selected_index >= (int)process_count) {
-                app_state.selected_index = process_count - 1;
+        if (should_refresh(&app_state)) {
+            if (last_processes != NULL) {
+                free(last_processes);
+                last_processes = NULL;
             }
-        } else {
-            app_state.selected_index = 0;
-        }
 
-        if (app_state.needs_refresh) {
-            render_ui(&app_state, processes, process_count, &mem_info);
+            last_processes = collect_processes(&last_process_count);
+
+            if (!read_system_memory_info(&last_mem_info)) {
+                memset(&last_mem_info, 0, sizeof(last_mem_info));
+            }
+
+            if (last_process_count > 0) {
+                if (app_state.selected_index >= (int)last_process_count) {
+                    app_state.selected_index = last_process_count - 1;
+                }
+            } else {
+                app_state.selected_index = 0;
+            }
+
             app_state.needs_refresh = false;
         }
 
-        handle_user_input(&app_state, processes, process_count);
+        if (last_processes != NULL) {
+            render_memory_info(&last_mem_info);
+            render_process_list(&app_state, last_processes, last_process_count);
+        } else {
+            clear();
+            mvprintw(0, 0,
+                     "Unable to read process information. Check permissions.");
+        }
 
-        free(processes);
+        refresh();
+
+        handle_user_input(&app_state, last_processes, last_process_count);
+    }
+
+    if (last_processes != NULL) {
+        free(last_processes);
     }
 
     cleanup_ncurses();
